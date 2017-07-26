@@ -9,6 +9,7 @@ from twisted.internet.protocol import Factory
 from twisted.python.log import startLogging
 import json
 import pysrt
+import math
 
 
 class MpvVrate(protocol.Protocol):
@@ -89,23 +90,23 @@ class MpvVrate(protocol.Protocol):
                 print("getpos data expected")
                 return
             self.pos = j['data'] * 1000
-            # print("pos", self.pos)
             if not self.subf:
                 return
             in_sub, towait = self.subf.next_sub(self.pos)
             if in_sub < 0:
                 return  # no more subs
             if in_sub and self.cur_speed != 1.0:
-                print("In subtitle, reduce speed")
+                print("- In subtitle, reduce speed")
                 self.set_speed(1.0)
             elif (not in_sub) and self.cur_speed != 2.0:
-                print("Not in subtitle, increase speed")
+                print("+ Not in subtitle, increase speed")
                 self.set_speed(2.0)
-            if towait/self.cur_speed > 1000:
+            towait /= self.cur_speed
+            if towait > 1000:
                 towait = 1000
-            print("wait", towait / 1000)
             reactor.callLater(towait / 1000, self.get_pos)
         elif exp == 'trackdata':
+            print(j)
             for idx, d in enumerate(j['data']):
                 if d['type'] == 'sub' and d['external'] is True:
                     self.get_subfname(idx)
@@ -122,22 +123,28 @@ class SRT(object):
         self.subf = pysrt.open(fname)
         self.startlist = []
         self.endlist = []
+
+        start, stop = None, None
         for s in self.subf:
-            self.startlist.append(s.start.ordinal)
-            self.endlist.append(s.end.ordinal)
+            nstart, nstop = s.start.ordinal - 100, s.end.ordinal + 50
+            if not stop:
+                start, stop = nstart, nstop
+            elif stop and nstart > stop:
+                self.startlist.append(start)
+                self.endlist.append(stop)
+                start, stop = nstart, nstop
+            else:
+                # merge
+                stop = nstop
+        if stop:
+            self.startlist.append(start)
+            self.endlist.append(stop)
 
-        # XXX merge?
-
-        # print(self.next_sub(0))
-        # print(self.next_sub(3327262))
-        # print(self.next_sub(3327264))
-
-        # print(self.next_sub(999999999))
-        # API
-        # self.subf.at(1234)
-        # self.subf[0].start.ordinal  # ms
-        # self.subf[0].end.ordinal  # ms
-        # self.subf[0].duration  # ms
+        total = 0.0
+        for s, e in zip(self.startlist, self.endlist):
+            total += e-s
+        total /= 1000
+        print("total subs time: %d min %d s" % (math.ceil(total/60), total % 60))
 
     def next_sub(self, pos):
         start_idx = bisect.bisect(self.startlist, pos)
@@ -167,37 +174,3 @@ endpoint = clientFromString(reactor, "unix:path=/tmp/mpv-socket")
 endpoint.connect(MPVFactory())
 
 reactor.run()
-
-
-# class vrate(object):
-
-#     def __init__(self):
-#         self.client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-#         self.client.setblocking(False)
-#         try:
-#             self.client.connect("/tmp/mpv-socket")
-#         except socket.error as e:
-#             print("Error while connecting to mpv socket")
-#             print(e)
-#             sys.exit(1)
-
-#     def _build_cmd(self, cmd):
-#         return json.dumps({"command": cmd}).encode('ascii')
-
-#     def get_pos(self):
-#         cmdtxt = self._build_cmd(["get_property", "playback-time"])
-#         print(cmdtxt)
-#         print(self.client.sendall(cmdtxt))
-#         while True:
-#             r, w, e = select.select([self.client], [], [])
-#             if r:
-#                 print(r)
-#                 self.client.recv(2)
-#                 break
-#         print('recv')
-#         print(self.client.recv(4))
-
-
-# if __name__ == "__main__":
-#     vr = vrate()
-#     vr.get_pos()
