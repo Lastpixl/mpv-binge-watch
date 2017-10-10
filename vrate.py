@@ -10,6 +10,7 @@ from twisted.python.log import startLogging
 import json
 import pysrt
 import math
+import argparse
 
 
 class MpvVrate(protocol.Protocol):
@@ -18,6 +19,7 @@ class MpvVrate(protocol.Protocol):
     pos = 0
     cur_speed = None
     subf = None
+    base_speed = 1.0
 
     def _send_cmd(self, cmd):
         cmd = json.dumps({"command": cmd}).encode('ascii') + b'\n'
@@ -67,14 +69,12 @@ class MpvVrate(protocol.Protocol):
         self.buf = b''
 
         j = json.loads(d)
-        # print(j)
         self.handle_json(j)
         if remain:
             self.dataReceived(remain)
 
     def handle_json(self, j):
         if 'event' in j:
-            # print("event", j)
             return
         elif not self.exp:
             return
@@ -88,6 +88,8 @@ class MpvVrate(protocol.Protocol):
         if exp == 'getpos':
             if 'data' not in j:
                 print("getpos data expected")
+                # retry
+                reactor.callLater(0.2, self.get_pos)
                 return
             self.pos = j['data'] * 1000
             if not self.subf:
@@ -95,12 +97,12 @@ class MpvVrate(protocol.Protocol):
             in_sub, towait = self.subf.next_sub(self.pos)
             if in_sub < 0:
                 return  # no more subs
-            if in_sub and self.cur_speed != 1.0:
+            if in_sub and self.cur_speed != MpvVrate.base_speed:
                 print("- In subtitle, reduce speed")
-                self.set_speed(1.0)
-            elif (not in_sub) and self.cur_speed != 2.0:
+                self.set_speed(MpvVrate.base_speed)
+            elif (not in_sub) and self.cur_speed != MpvVrate.base_speed + 1.0:
                 print("+ Not in subtitle, increase speed")
-                self.set_speed(2.0)
+                self.set_speed(MpvVrate.base_speed + 1.0)
             towait /= self.cur_speed
             if towait > 1000:
                 towait = 1000
@@ -126,7 +128,7 @@ class SRT(object):
 
         start, stop = None, None
         for s in self.subf:
-            nstart, nstop = s.start.ordinal - 100, s.end.ordinal + 50
+            nstart, nstop = s.start.ordinal - 700, s.end.ordinal + 50
             if not stop:
                 start, stop = nstart, nstop
             elif stop and nstart > stop:
@@ -167,10 +169,16 @@ class MPVFactory(Factory):
         return MpvVrate()
 
 
-startLogging(sys.stdout)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('base_speed', type=float, nargs='?', default=1.0)
+    args = parser.parse_args()
+    MpvVrate.base_speed = args.base_speed
 
-endpoint = clientFromString(reactor, "unix:path=/tmp/mpv-socket")
-# endpoint = clientFromString(reactor, "tcp:127.0.0.1:9000")
-endpoint.connect(MPVFactory())
+    startLogging(sys.stdout)
 
-reactor.run()
+    endpoint = clientFromString(reactor, "unix:path=/tmp/mpv-socket")
+    # endpoint = clientFromString(reactor, "tcp:127.0.0.1:9000")
+    endpoint.connect(MPVFactory())
+
+    reactor.run()
