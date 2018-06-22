@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# Reference: http://www.mplayerhq.hu/DOCS/tech/slave.txt
 
 import sys
 import bisect
@@ -20,6 +21,7 @@ class MpvVrate(protocol.Protocol):
     cur_speed = None
     subf = None
     base_speed = 1.0
+    subdelay = 0.0
 
     def _send_cmd(self, cmd):
         cmd = json.dumps({"command": cmd}).encode('ascii') + b'\n'
@@ -30,8 +32,9 @@ class MpvVrate(protocol.Protocol):
         self._send_cmd(["get_property", "playback-time"])
         self.exp.append('getpos')
 
-    def get_tdiff(self):
-        pass
+    def get_subdelay(self):
+        self._send_cmd(["get_property", "sub-delay"])
+        self.exp.append('subdelay')
 
     def get_trackdata(self):
         self._send_cmd(["get_property", "track-list"])
@@ -49,10 +52,12 @@ class MpvVrate(protocol.Protocol):
 
     def set_speed(self, speed):
         self._send_cmd(["set_property", "speed", speed])
+        self.exp.append('setspeed')
         self.cur_speed = speed
 
     def connectionMade(self):
         # print("made")
+        self.get_subdelay()
         self.get_pos()
         self.get_speed()
         self.get_trackdata()
@@ -85,6 +90,8 @@ class MpvVrate(protocol.Protocol):
         if exp == 'getspeed':
             self.cur_speed = j['data']
             print(self.cur_speed, 'speed')
+        if exp == 'getspeed':
+            pass
         if exp == 'getpos':
             if 'data' not in j:
                 print("getpos data expected")
@@ -94,7 +101,7 @@ class MpvVrate(protocol.Protocol):
             self.pos = j['data'] * 1000
             if not self.subf:
                 return
-            in_sub, towait = self.subf.next_sub(self.pos)
+            in_sub, towait = self.subf.next_sub(self.pos - self.subdelay*1000)
             if in_sub < 0:
                 return  # no more subs
             if in_sub and self.cur_speed != MpvVrate.base_speed:
@@ -106,11 +113,16 @@ class MpvVrate(protocol.Protocol):
             towait /= self.cur_speed
             if towait > 1000:
                 towait = 1000
+            if towait < 0:
+                towait = 1000
             reactor.callLater(towait / 1000, self.get_pos)
+            self.get_subdelay()
         elif exp == 'trackdata':
             print(j)
             for idx, d in enumerate(j['data']):
-                if d['type'] == 'sub' and d['external'] is True:
+                if (d['type'] == 'sub' and
+                        d['external'] is True and
+                        d['selected'] is True):
                     self.get_subfname(idx)
                     break
         elif exp == 'subfname':
@@ -118,6 +130,8 @@ class MpvVrate(protocol.Protocol):
             print("Using subtitles file %s." % fname)
             self.subf = SRT(fname)
             self.get_pos()
+        elif exp == 'subdelay':
+            self.subdelay = j['data']
 
 
 class SRT(object):
@@ -128,7 +142,7 @@ class SRT(object):
 
         start, stop = None, None
         for s in self.subf:
-            nstart, nstop = s.start.ordinal - 700, s.end.ordinal + 50
+            nstart, nstop = s.start.ordinal - 400, s.end.ordinal + 10
             if not stop:
                 start, stop = nstart, nstop
             elif stop and nstart > stop:
@@ -157,6 +171,7 @@ class SRT(object):
         else:
             if start_idx == len(self.startlist):
                 npos = -1
+                in_sub = False
             else:
                 in_sub = False
                 npos = self.startlist[start_idx]
